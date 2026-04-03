@@ -1,1 +1,113 @@
+name: Android Native Release (Flutter)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: APP_NAME untuk brand.properties
+        required: false
+        type: string
+      api_base_url:
+        description: API_BASE_URL untuk brand.properties (akhiri dengan /)
+        required: false
+        type: string
+      app_package:
+        description: APP_PACKAGE (applicationId)
+        required: false
+        type: string
+      force_api35:
+        description: Paksa compileSdk/targetSdk 35 jika SDK 35 tersedia
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter Version
+        run: flutter --version
+
+      - name: Prepare Branding Files (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd flutter_v3/android
+          mkdir -p native
+          if [[ -n "${{ inputs.app_name }}" || -n "${{ inputs.api_base_url }}" || -n "${{ inputs.app_package }}" ]]; then
+            {
+              [[ -n "${{ inputs.app_name }}" ]] && echo "APP_NAME=${{ inputs.app_name }}"
+              [[ -n "${{ inputs.api_base_url }}" ]] && echo "API_BASE_URL=${{ inputs.api_base_url }}"
+              [[ -n "${{ inputs.app_package }}" ]] && echo "APP_PACKAGE=${{ inputs.app_package }}"
+            } > native/brand.properties
+          fi
+          if [[ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ]]; then
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > native/google-services.json
+          fi
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+
+      - name: Prepare Keystore (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd flutter_v3/android
+          if [[ -n "${KEYSTORE_BASE64:-}" ]]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > app/upload-keystore.jks
+            cat > key.properties <<EOF
+            storeFile=app/upload-keystore.jks
+            storePassword=${KEYSTORE_PASSWORD}
+            keyPassword=${KEY_PASSWORD}
+            keyAlias=${KEY_ALIAS}
+EOF
+          fi
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Install Dependencies
+        run: |
+          set -euo pipefail
+          cd flutter_v3
+          flutter pub get
+
+      - name: Build APK + AAB (Release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd flutter_v3/android
+          if [[ "${{ inputs.force_api35 }}" == "true" ]]; then
+            ./gradlew -PforceApi35=true clean :app:assembleRelease :app:bundleRelease --stacktrace
+          else
+            ./gradlew clean :app:assembleRelease :app:bundleRelease --stacktrace
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: |
+            flutter_v3/build/app/outputs/apk/release/*.apk
+            flutter_v3/build/app/outputs/bundle/release/*.aab
+          if-no-files-found: error
+
 
